@@ -69,12 +69,6 @@
    :count-max  0 :peak-max   0 :mean-max 0
    :diverse-peak-min 0 :diverse-peak-max 0})
 
-(def LOTS
-  "The bounds for an arc where we can't find bounds"
-  {:count-min  0     :peak-min   0 :mean-min 0
-   :count-max  10000 :peak-max   1e8 :mean-max 1e8
-   :diverse-peak-min 0 :diverse-peak-max 1e8})
-
 (defn- single-edge-bounds
   "Compute the bounds for a single edge based on what it bridges.
   - `vertices` is the output of `vertex-information`
@@ -286,7 +280,10 @@
                     (count (set (vals component-labels))) "components,"
                     (count (:edges problem)) "edges total")
     
-    (let [result (->> (:edges problem) (mapcat (juxt (juxt :i :j) (juxt :j :i)))
+    (let [LOTS (delay
+                 (reduce #(merge-with + %1 %2) NOTHING (vals vertices)))
+          
+          result (->> (:edges problem) (mapcat (juxt (juxt :i :j) (juxt :j :i)))
                       (pmap-n
                        parallelism
                        (fn [[i j]]
@@ -299,8 +296,7 @@
                                   (component-bounds ci i j)
 
                                   (do (log/warnf "Edge unexpectedly crosses components %s %s" i j)
-                                      LOTS
-                                      ))))
+                                      @LOTS))))
                           ]))
                       (into {}))]
       (log-time "generated result for every edge")
