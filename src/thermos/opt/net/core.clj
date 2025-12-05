@@ -118,22 +118,6 @@
               {:i 4 :j :c}])]
     (ief #{:a :b :c})))
 
-(defn- edges-to-single-vertices
-  "Return a sequence of [[i j] k] tuples, where edge [i j] is in arc and
-  k is a member of dvtx. The edges returned are those which can only reach
-  the given vertex k, when starting at members of svtx"
-  [arc svtx dvtx]
-  (let [adj (reduce
-             (fn [a [i j]] (assoc a i (conj (get a i #{}) j)))
-             {}
-             arc)
-        rt (graph/reachable-through adj svtx)]
-    ;; rt maps edges to sets of vertices reachable through edges
-    (for [[e ks] rt
-          :let [ks (set/intersection dvtx ks)]
-          :when (= 1 (count ks))]
-      [(as-edge e) (first ks)])))
-
 
 (defn construct-mip
   "Constructs the formalism for a network `problem` and returns the
@@ -662,15 +646,28 @@
            [:+ [:AIN e] [:AIN (rev-edge e)]])
          [:DVIN v]])
 
-      ;; paths that reach only to a single vertex are off if the vertex is off
-      ;; note that they are not on if the vertex is on, because it might be a diamond.
-      (for [[edge demand] (edges-to-single-vertices arc svtx dvtx)
-            :when (not (contains? svtx demand))]
-        [:<=
-         [:+ [:AIN edge] [:AIN (rev-edge edge)]]
-         [:DVIN demand]])
-
-      )
+      ;; This constraint makes connectors off if their demands are off.
+      ;; It helps the solver a little; we previously had a stronger relation
+      ;; where any arc through which only a single demand can be connected
+      ;; is tied to that demand, but computing those arcs was expensive in
+      ;; large graphs. I'm not sure there is an efficient way.
+      ;; The obvious answer involves computing the transitive closure
+      ;; of the graph which is as hard as matrix multipliciation
+      ;; so at least n^2 in vertices.
+      ;; In some sense it could be a little easier as we want to know
+      ;; only which edges / vertices are reachable only from single demands
+      ;; so we can quit a bit earlier. Perhaps working up from the leaves?
+      (for [e edge
+            :when (or (and (contains? dvtx (first e))
+                           (not (contains? dvtx (second e))))
+                      (and (not (contains? dvtx (first e)))
+                           (contains? dvtx (second e))))
+            :let [d (if (contains? dvtx (first e))
+                      (first e)
+                      (second e))]]
+        [:and
+         [:<= [:AIN e] [:DVIN d]]
+         [:<= [:AIN (rev-edge e)] [:DVIN d]]]))
      
      :vars
      (cond->
