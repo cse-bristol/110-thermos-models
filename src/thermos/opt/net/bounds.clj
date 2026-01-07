@@ -250,6 +250,15 @@
         _ (log-time "computed bounds for bridges")
         
         ;; a version of adjacency with all bridges removed
+        ;; we might not need to remove the bridges, which would make this faster?
+        ;; bit more thought needed.
+        ;; within a real component the upper bound is straightforward.
+        ;; saying 'component' for component after removing bridges:
+        ;; if the component has only one bridge to a supply we can make that bridge
+        ;; unidirectional
+        ;; if the component has several bridges to a supply we can go in one and out
+        ;; the other either way
+        ;; maybe component bounds could just be the sums for every component?
         components (reduce
                     (fn [a [i j]] (-> a (update i disj j) (update j disj i)))
                     adjacency bridges)
