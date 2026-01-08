@@ -9,7 +9,7 @@
 (t/deftest bindings
   (binding [sut/*discount-rate*     0
             sut/*accounting-period* 10]
-    (t/is (= 3 (sut/pv-sequence [1 1 1])))
+    (t/is (== 3.0 (sut/pv-sequence [1 1 1])))
     (t/is (== 20 (sut/pv-sequence (repeat 2))))
 
     (t/is (== 10 (sut/pv-recurring 1)))

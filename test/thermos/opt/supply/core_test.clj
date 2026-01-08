@@ -57,6 +57,7 @@
      {:frequency 1
       :divisions (count heat-demand)
       :heat-demand heat-demand
+      :substation-load-kw {}
       :grid-offer zeroes
       :fuel
       (into {} (for [[fuel price] prices]

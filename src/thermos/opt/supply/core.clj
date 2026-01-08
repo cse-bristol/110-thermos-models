@@ -109,7 +109,7 @@
 (defn- valid? [x y]
   (let [is-valid (spec/valid? x y)]
     (when-not is-valid
-      (log/error (spec/explain-str x y)))
+      (log/error "Invalid supply problem:" (spec/explain-str x y)))
     is-valid))
 
 (defn construct-mip
