@@ -153,8 +153,8 @@
                      s/ALL
                      
                      (s/multi-path
-                      [:demand :alternatives (s/terminal assoc-by)]
-                      [:demand :insulation   (s/terminal assoc-by)]
+                      [(s/must :demand) (s/must :alternatives) (s/terminal assoc-by)]
+                      [(s/must :demand) (s/must :insulation)   (s/terminal assoc-by)]
                       )]
                     problem)
 
@@ -214,6 +214,29 @@
         neighbours          (into {} (for [[i ijs] (group-by first arc)]
                                         [i (set (map second ijs))]))
 
+        
+        edge-length   (->> (for [[a e] arc-map] [a (:length e)]) (into {}))
+        edge-required (->> (for [[a e] arc-map] [a (:required e)]) (into {}))
+
+        loss-w-per-kwp (memoize
+                        (interpolate
+                         (-> problem :pipe-losses (:kwp     [0]))
+                         (-> problem :pipe-losses (get :w%m [0]))))
+        
+        edge-loss-kw-for-kwp
+        (fn [e kwp]
+          (* (edge-length e)
+             (/ (loss-w-per-kwp kwp) 1000.0)))
+
+        max-loss-kw
+        (reduce
+         +
+         (for [e edge]
+           (let [max-fwd  (:peak-max (get flow-bounds e) 0)
+                 max-back (:peak-max (get flow-bounds (rev-edge e)) 0)]
+             (edge-loss-kw-for-kwp e (max max-fwd max-back)))))
+
+        
         ;; we can restrict supply capacity a bit using the flow bounds
         ;; which can't hurt model efficiency. We use the diversified
         ;; value but when using it as a big M on undiversified flow we
@@ -226,12 +249,11 @@
                        (reduce + (demand-kwp k)
                                (for [n (neighbours k)]
                                  (-> flow-bounds (get [k n]) :diverse-peak-max (or 0))))
-                       flow-bound (* flow-bound-slack summed-flow-bounds)
+                       flow-bound (+ max-loss-kw (* flow-bound-slack summed-flow-bounds))
                        given-capacity (-> (vertices k) :supply :capacity-kw (or 0))
                        ]
                    (assoc a k (min flow-bound given-capacity))))
                {} svtx)]
-
           (fn [i] (or (get supply-bounds i) 0)))
 
         supply-max-mean
@@ -242,14 +264,13 @@
                        (reduce + (demand-kwp k)
                                (for [n (neighbours k)]
                                  (-> flow-bounds (get [k n]) :mean-max (or 0))))
-                       flow-bound (* flow-bound-slack summed-flow-bounds)
+                       flow-bound (+ (* flow-bound-slack summed-flow-bounds)
+                                     max-loss-kw)
                        given-capacity (some-> (vertices k) :supply :capacity-kwh
                                               (* years-per-hour))
-                       
                        ]
                    (assoc a k (min flow-bound (or given-capacity flow-bound)))))
                {} svtx)]
-
           (fn [i] (get supply-bounds i)))
         
         supply-fixed-cost   (fn [i] (or (-> (vertices i) :supply :cost) 0))
@@ -442,29 +463,6 @@
 
               ;; don't pay for what we didn't use due to insulation
               [:* [:ALT-AVOIDED-KWH i a] (alternative-cost-per-kwh i a)]])]
-
-
-        ;; Utilities for computing parameters & bounds
-        edge-length   (->> (for [[a e] arc-map] [a (:length e)]) (into {}))
-        edge-required (->> (for [[a e] arc-map] [a (:required e)]) (into {}))
-
-        loss-w-per-kwp (memoize
-                        (interpolate
-                         (-> problem :pipe-losses (:kwp     [0]))
-                         (-> problem :pipe-losses (get :w%m [0]))))
-        
-        edge-loss-kw-for-kwp
-        (fn [e kwp]
-          (* (edge-length e)
-             (/ (loss-w-per-kwp kwp) 1000.0)))
-
-        max-loss-kw
-        (reduce
-         +
-         (for [e edge]
-           (let [max-fwd  (:peak-max (get flow-bounds e) 0)
-                 max-back (:peak-max (get flow-bounds (rev-edge e)) 0)]
-             (edge-loss-kw-for-kwp e (max max-fwd max-back)))))
 
         arc-max-mean-flow
         (into
@@ -1255,8 +1253,6 @@
      (format "%-4s%-8s%-8s%-8s%-3s%-10s%-6s%-6s%-12s%-7s%-7s"
              "N" "Tn" "T" "Tr" ">" "VALUE" "NV" "NE" "STATE" "δFIX%" "GAP%"))
 
-    ;; (def -last-problem problem)
-    
     (loop [mip      mip ;; comes parameterised out of the gate
            seen     #{} ;; decision sets we have already seen
            iters    0   ;; number of tries
