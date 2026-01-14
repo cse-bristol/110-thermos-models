@@ -12,24 +12,33 @@
   
   (nominal-value [this year] "What does this value (or cost , -ve) in `year`")
   (tagged-values [this year] "What are the nominal values by tag in
-  `year`; returns a map from tag to value, eg {:capex 10}"))
+  `year`; Returns a series of maps with a :value key and other fields"))
 
 (deftype Series [type values]
   PresentValue
   (nominal-value [_ year] (get values year 0))
-  (tagged-values [t year] {type (nominal-value t year)}))
+  (tagged-values [t year] [{:cost type
+                            :value (nominal-value t year)}]))
 
-(deftype Equipment [type capex opex repex lifetime]
+(deftype Equipment [tags capex opex repex lifetime]
   PresentValue
   (nominal-value [e year]
     (cond (zero? year) (- capex)
           (zero? (mod year lifetime)) (- (+ opex repex))
           :else (- opex)))
   (tagged-values [e year]
-    (cond (zero? year) {[:capex type] capex}
-          (zero? (mod year lifetime)) {[:opex type] (- opex)
-                                       [:repex type] (- repex)}
-          :else {[:opex type] (- opex)})))
+    (cond (zero? year) [(assoc tags
+                               :cost :capex
+                               :value (- capex))]
+          (zero? (mod year lifetime)) [(assoc tags
+                                              :cost :opex
+                                              :value (- opex))
+                                       (assoc tags
+                                              :cost :repex
+                                              :value (- repex))]
+          :else [(assoc tags
+                        :cost :opex
+                        :value (- opex))])))
 
 (deftype Sum [values]
   PresentValue
@@ -37,13 +46,12 @@
     (reduce + 0 (map #(nominal-value % year) values)))
   
   (tagged-values [s year]
-    (reduce (partial merge-with +) {}
-            (map #(tagged-values % year) values))))
+    (mapcat #(tagged-values % year) values)))
 
-(deftype Revenue [tag inital-value annual-value]
+(deftype Revenue [tags inital-value annual-value]
   PresentValue
   (nominal-value [r year] (if (zero? year) inital-value annual-value))
-  (tagged-values [r year] {tag (nominal-value r year)}))
+  (tagged-values [r year] [(assoc tags :value (nominal-value r year))]))
 
 (defn- collect
   "Get all the PresentValues out of obj"
@@ -82,17 +90,13 @@
 (defn future-values [period x]
   (if (satisfies? PresentValue x)
     (for [year (range period)
-          [tag value] (tagged-values x year)]
-      {:year year
-       :tag tag
-       :value value})
+          tagged-value (tagged-values x year)
+          :when (not (zero? (:value tagged-value)))]
+      (assoc tagged-value :year year))
     
     (let [values (collect x)]
       (when (seq values)
-        ;; TODO should this be zero when there is nothing in there?
-        ;; or nil as distinct from zero.
-        (reduce into [] (map (partial future-values period)
-                             values))))))
+        (reduce into [] (map (partial future-values period) values))))))
 
 ;; These are older functions, still used in the supply model.
 
