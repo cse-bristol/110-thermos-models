@@ -2,7 +2,8 @@
 ;; Licensed under the Reciprocal Public License v1.5. See LICENSE for licensing details.
 
 (ns thermos.opt.money
-  "Functions for discounting")
+  "Functions for discounting"
+  (:require [clojure.walk :as walk]))
 
 (defprotocol PresentValue
   "Protocol for things which can have a present value; the two functions
@@ -13,17 +14,10 @@
   (tagged-values [this year] "What are the nominal values by tag in
   `year`; returns a map from tag to value, eg {:capex 10}"))
 
-(extend-type clojure.lang.IPersistentVector
-  ;; A persistent vector is taken to be counting years from 0
+(deftype Series [type values]
   PresentValue
-  (nominal-value [v year] (get v year 0.0))
-  (tagged-values [v year] {:nv (nominal-value v year)}))
-
-(extend-type Number
-  ;; a Number is taken to be capex, or PV, i.e. it is its own value
-  PresentValue
-  (nominal-value [n year] (if (zero? year) (double n) 0.0))
-  (tagged-values [this year] {:pv (nominal-value this year)}))
+  (nominal-value [_ year] (get values year 0))
+  (tagged-values [t year] {type (nominal-value t year)}))
 
 (deftype Equipment [type capex opex repex lifetime]
   PresentValue
@@ -51,11 +45,23 @@
   (nominal-value [r year] (if (zero? year) inital-value annual-value))
   (tagged-values [r year] {tag (nominal-value r year)}))
 
+(defn- collect
+  "Get all the PresentValues out of obj"
+  [obj]
+  (let [items (atom nil)]
+    (walk/prewalk
+     (fn [item]
+       (when (satisfies? PresentValue item)
+         (swap! items conj item))
+       item)
+     obj)
+    @items))
+
 (defn present-value
   "Take the PV of `x` which implements `PresentValue`
   nil -> nil"
   [discount-rate period x]
-  (when x
+  (if (satisfies? PresentValue x)
     (let [discount-rate (double (+ discount-rate 1))]
       (loop [acc 0.0
              yr 0
@@ -65,7 +71,28 @@
              (+ acc
                 (/ (nominal-value x yr) rt))
              (inc yr)
-             (* rt discount-rate)))))))
+             (* rt discount-rate)))))
+    (let [values (collect x)]
+      (when (seq values)
+        ;; TODO should this be zero when there is nothing in there?
+        ;; or nil as distinct from zero.
+        (reduce + 0.0 (map (partial present-value discount-rate period)
+                           values))))))
+
+(defn future-values [period x]
+  (if (satisfies? PresentValue x)
+    (for [year (range period)
+          [tag value] (tagged-values x year)]
+      {:year year
+       :tag tag
+       :value value})
+    
+    (let [values (collect x)]
+      (when (seq values)
+        ;; TODO should this be zero when there is nothing in there?
+        ;; or nil as distinct from zero.
+        (reduce into [] (map (partial future-values period)
+                             values))))))
 
 ;; These are older functions, still used in the supply model.
 
@@ -76,7 +103,7 @@
   ([xs] (pv-sequence xs *discount-rate* *accounting-period*))
   ([xs r p]
    (let [xs (take p xs)]
-     (present-value r p (vec xs)))))
+     (present-value r p (->Series :pv (vec xs))))))
 
 (defn pv-recurring
   ([x] (pv-recurring x *discount-rate* *accounting-period*))
