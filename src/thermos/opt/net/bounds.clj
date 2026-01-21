@@ -14,6 +14,17 @@
         (zero? y) x
         :else (min x y)))
 
+(defrecord VertexInfo [^double demand-kwh
+                       ^double demand-kwp
+                       ^double demand-dkwp
+                       ^double supply-capacity-kw
+                       ^double supply-capacity-dkw
+                       ^int count])
+
+(defrecord EdgeBounds [^long count-min ^double peak-min ^double mean-min
+                       ^long count-max ^double peak-max ^double mean-max
+                       ^double diverse-peak-min ^double diverse-peak-max])
+
 (defn- vertex-information
   "Given input vertices in network problem format (a list of maps)
   produce a summary which goes {vertex-id {fields below}}"
@@ -23,15 +34,13 @@
      (fn [m v]
        (assoc m (:id v)
               (let [n (-> v (:demand {:count 0}) (:count 1))]
-                {:supply-capacity-kw  (/ (-> v :supply (:capacity-kw 0)) (diversity 1000))
-                 :demand-kwh          (-> v :demand (:kwh 0))
-                 ;; TWEAK to undo diversity here (so we can redo it later)
-                 :demand-kwp          (/ (-> v :demand (:kwp 0)) (diversity n))
-                 ;; without diversity, for pipe costs
-                 :demand-dkwp         (-> v :demand (:kwp 0))
-                 :supply-capacity-dkw (-> v :supply (:capacity-kw 0))
-                 :count               n})
-              ))
+                (->VertexInfo
+                 (-> v :demand (:kwh 0))
+                 (/ (-> v :demand (:kwp 0)) (diversity n))
+                 (-> v :demand (:kwp 0))
+                 (/ (-> v :supply (:capacity-kw 0)) (diversity 1000))
+                 (-> v :supply (:capacity-kw 0))
+                 n))))
      {} vertices)))
 
 
@@ -65,9 +74,7 @@
 
 (def NOTHING
   "The bounds for an arc which cannot be included in any solution"
-  {:count-min  0 :peak-min   0 :mean-min 0
-   :count-max  0 :peak-max   0 :mean-max 0
-   :diverse-peak-min 0 :diverse-peak-max 0})
+  (->EdgeBounds 0 0 0 0 0 0 0 0))
 
 (defn- single-edge-bounds
   "Compute the bounds for a single edge based on what it bridges.
@@ -103,14 +110,11 @@
              d-peak-max 0
              mean-max   0]
         (if (empty? downstream)
-          {:count-min        count-min
-           :count-max        count-max
-           :peak-min         (min upstream-supply peak-min)
-           :peak-max         (min upstream-supply peak-max)
-           :diverse-peak-min (min d-upstream-supply d-peak-min)
-           :diverse-peak-max (min d-upstream-supply d-peak-max)
-           :mean-min         mean-min
-           :mean-max         mean-max}
+          (->EdgeBounds
+           count-min (min upstream-supply peak-min) mean-min
+           count-max (min upstream-supply peak-max) mean-max
+           (min d-upstream-supply d-peak-min)
+           (min d-upstream-supply d-peak-max))
 
           (let [[v & downstream] downstream
                 peak             (-> vertices (get v) (:demand-kwp 0))
@@ -215,7 +219,7 @@
 
         anti-connectors (set (for [[i j] connectors] [j i]))
 
-        single-edge-bounds (memoize (partial single-edge-bounds vertices))
+        single-edge-bounds (partial single-edge-bounds vertices) #_(memoize (partial single-edge-bounds vertices))
         _ (log-time "initialized")
         ;; this is all bridges internal to the graph once there are no connectors.
         ;; needed because power cannot flow up a connector, but bridge finding
@@ -228,7 +232,7 @@
                               (graph/bridges)
                               (set))
         _ (log-time "computed bridges")
-        bridges    (concat internal-bridges connectors anti-connectors)
+        bridges    (set (concat internal-bridges connectors anti-connectors))
         parallelism (min 4 (.availableProcessors (Runtime/getRuntime)))
 
         bridge-bounds (->> (pmap-n
