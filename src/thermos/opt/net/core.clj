@@ -8,8 +8,7 @@
             [com.rpl.specter :as s]
             [clojure.tools.logging :as log]
             [clojure.java.io :as io]
-            [thermos.opt.net.specs :refer [network-problem]]
-            [clojure.spec.alpha :as spec]
+            [thermos.opt.net.specs :refer [ensure-valid-problem]]
             [thermos.opt.net.diversity :refer [diversity-factor]]
             [thermos.opt.net.bounds :as bounds]
             [thermos.opt.net.graph :as graph]
@@ -57,12 +56,6 @@
                       m (/ (- py py2) (- px px2))
                       fr (- x px2)]
                   (+ py2 (* fr m)))))))))))
-
-(defn- valid? [x y]
-  (let [is-valid (spec/valid? x y)]
-    (when-not is-valid
-      (log/error (spec/explain-str x y)))
-    is-valid))
 
 (defn- interior-edge-fn
   "Given the :edges from a problem, return a function
@@ -140,9 +133,9 @@
               :or {objective-scale 1.0
                    objective-precision 0.0
                    edge-cost-precision 0.0}}]
-  {:pre [(valid? network-problem problem)]}
-
-  (let [flow-bounds (or (:bounds problem)
+  (let [problem (ensure-valid-problem problem)
+        
+        flow-bounds (or (:bounds problem)
                         (bounds/compute-bounds problem))
 
         ;; regroup insulation and alternatives
@@ -497,21 +490,42 @@
          {}
          svtx)
         ]
-    {:maximize 
-     [:- total-connection-value
-      [:+
-       total-supply-cost
-       total-pipe-cost
-       emissions-cost
-       total-insulation-cost
-       total-alt-cost]
-      ]
+    {:maximize (case (:objective problem)
+                 :max-npv :TOTAL-NPV
+                 :max-kwh :TOTAL-KWH
+
+                 (throw (ex-info "Unknown objective for network problem"
+                                 {:objective (:objective problem)})))
+     
 
      :objective-scale objective-scale
      :objective-precision objective-precision
      
      :subject-to
      (list
+
+      ;; bind possible objectives to vars, in case we want to get them
+      ;; out even though we aren't using them as obj.
+      [:= :TOTAL-NPV [:- total-connection-value
+                      [:+
+                       total-supply-cost
+                       total-pipe-cost
+                       emissions-cost
+                       total-insulation-cost
+                       total-alt-cost]]]
+
+      ;; the total KWH objective is a little bit interesting as it
+      ;; relates to insulation and alternative systems. It is just
+      ;; totalling up kWh of on-network buildings disregarding
+      ;; insulation. Including insulation makes the program quadratic
+      ;; or needs a set of extra big-M constraints, as we'd have to
+      ;; think about sum(INSULATION-KWH * DVIN). It is unlikely to be
+      ;; that important. Maybe we would network a building which has
+      ;; low demand after insulation, when we could have selected a
+      ;; different one which can't be insulated?
+      [:= :TOTAL-KWH
+       [:+ (for [d dvtx] [:* [:DVIN d] (demand-kwh d)])]]
+      
       ;; no loops
       (when no-loops
         (for [v vtx]
@@ -704,6 +718,9 @@
                (edge-loss-kw-for-kwp e kwp)))}
 
           ;; VARIABLES
+
+          :TOTAL-KWH {}
+          :TOTAL-NPV {}
           
           :DVIN {:type :binary :indexed-by [dvtx]
                  :value demand-connection-value
@@ -1229,7 +1246,8 @@
                             :or {solver :scip}}]
   {:pre [(#{:scip :gurobi} solver)]}
   (log/info "Solving network problem")
-  (let [objective-scale     (or (:objective-scale problem) 1.0)
+  (let [problem             (ensure-valid-problem problem)
+        objective-scale     (or (:objective-scale problem) 1.0)
         objective-precision (or (:objective-precision problem) 0.0)
         edge-cost-precision (or (:edge-cost-precision problem) 0.0)
 
