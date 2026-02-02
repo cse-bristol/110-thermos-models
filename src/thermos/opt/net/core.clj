@@ -679,7 +679,46 @@
                       (second e))]]
         [:and
          [:<= [:AIN e] [:DVIN d]]
-         [:<= [:AIN (rev-edge e)] [:DVIN d]]]))
+         [:<= [:AIN (rev-edge e)] [:DVIN d]]])
+
+      ;; user-input upper/lower bounds, in the :constraints part of problem.
+      (let [total-length [:+ (for [e edge]
+                              [:* (edge-length e)
+                               ;; we can only ever have one of these on
+                               ;; so this is OK to do
+                               [:+ [:AIN e] [:AIN (rev-edge e)]]])]]
+
+        ;; Generates a set of constraints for those defined in the input
+        (for [bound [:min :max]
+
+              [constraint-key ;; the key in the input "constraints" map
+               lhs rhs] ;; the left- and right- hand sides of the constraint
+              
+              [[:kwh :TOTAL-KWH 1] ;; RHS = 1 means RHS = limit * 1
+               [:npv :TOTAL-NPV 1]
+               [:length total-length 1]
+               [:building-count [:+ (for [d dvtx] [:DVIN  d])] 1]
+               [:connection-count [:+ (for [d dvtx] [:* [:DVIN d]
+                                                       (vertex-demand-count d)])] 1]
+               [:linear-density :TOTAL-KWH total-length]]
+
+              ;; check if there is a limit defined
+              :let [limit (-> problem :constraints constraint-key bound)]
+              :when limit]
+
+          ;; so the output is something like
+          ;; [:>= TOTAL-KWH [* 1 limit]]
+          
+          ;; the RHS part is only in there because linear density needs it,
+          ;; formulated as length >= kwh * density or vv.
+          
+          ;; for all the other constraints it's 1 as they are a constant
+          ;; on the RHS.
+
+          ;; if it's a lower bound the LHS has to be above the limit
+          ;; if it's an upper bound vv.
+          [(if (= bound :min) :>= :<=) lhs [:* rhs limit]])))
+     
      
      :vars
      (cond->

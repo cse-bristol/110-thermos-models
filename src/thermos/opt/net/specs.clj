@@ -95,14 +95,27 @@
     [:should-be-feasible [:boolean {:default false}]]
     
     [:vertices [:+ vertex]]
-    [:edges [:+ edge]]]))
+    [:edges [:+ edge]]
+
+    [:constraints
+     (->> (for [var [:kwh :npv :length :linear-density]]
+            [var {:optional true}
+             [:map
+              [:min {:optional true} :double]
+              [:max {:optional true} :double]]])
+          (concat
+           (for [var [:building-count :connection-count]]
+             [var {:optional true}
+              [:map
+               [:min {:optional true} :int]
+               [:max {:optional true} :int]]]))
+          (into [:map {:default {}}]))]]))
 
 (let [coerce (m/coercer
               network-problem
               (mt/transformer
                mt/json-transformer ;; cleans up doubles etc
-               (mt/default-value-transformer {::mt/add-optional-keys true})
-               ))]
+               (mt/default-value-transformer {::mt/add-optional-keys true})))]
   (defn ensure-valid-problem
     "Check problem is valid, or throw a diagnostic exception"
     [problem]
