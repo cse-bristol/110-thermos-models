@@ -67,24 +67,34 @@
 
 (defn present-value
   "Take the PV of `x` which implements `PresentValue`
-  nil -> nil"
-  [discount-rate period x]
+  nil -> nil
+
+  If `filter-values` is present then the pv elements are collected as
+  produced by `tagged-values` and then filtered if they pass
+  filter-values"
+  [discount-rate period x & {:keys [filter-values]}]
   (if (satisfies? PresentValue x)
     (let [discount-rate (double (+ discount-rate 1))]
       (loop [acc 0.0
              yr 0
              rt 1.0]
         (if (= period yr) acc
-            (recur
-             (+ acc
-                (/ (nominal-value x yr) rt))
-             (inc yr)
-             (* rt discount-rate)))))
+            (let [nominal (if filter-values
+                            (->> (tagged-values x yr)
+                                 (filter filter-values)
+                                 (map :value)
+                                 (reduce + 0.0))
+                            (nominal-value x yr))]
+              (recur
+               (+ acc (/ nominal rt))
+               (inc yr)
+               (* rt discount-rate))))))
     (let [values (collect x)]
       (when (seq values)
         ;; TODO should this be zero when there is nothing in there?
         ;; or nil as distinct from zero.
-        (reduce + 0.0 (map (partial present-value discount-rate period)
+        (reduce + 0.0 (map (fn [x] (present-value discount-rate period x
+                                                  :filter-values filter-values))
                            values))))))
 
 (defn future-values [period x]

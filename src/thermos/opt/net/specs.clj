@@ -98,17 +98,21 @@
     [:edges [:+ edge]]
 
     [:constraints
+     ;; TODO a nice constraint to have here would be something like
+     ;; max NPV s.t. max capex = C
+     ;; but at the moment the model cannot see capex vs future costs.
+     ;; and it would be a big change to support this
      (->> (for [var [:kwh :npv :length :linear-density]]
             [var {:optional true}
              [:map
-              [:min {:optional true} :double]
-              [:max {:optional true} :double]]])
+              [:min {:optional true} [:maybe :double]]
+              [:max {:optional true} [:maybe :double]]]])
           (concat
            (for [var [:building-count :connection-count]]
              [var {:optional true}
               [:map
-               [:min {:optional true} :int]
-               [:max {:optional true} :int]]]))
+               [:min {:optional true} [:maybe :int]]
+               [:max {:optional true} [:maybe :int]]]]))
           (into [:map {:default {}}]))]]))
 
 (let [coerce (m/coercer
