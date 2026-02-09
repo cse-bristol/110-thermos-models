@@ -2,88 +2,130 @@
 ;; Licensed under the Reciprocal Public License v1.5. See LICENSE for licensing details.
 
 (ns thermos.opt.net.specs
-  (:require [spec-tools.data-spec :as ds]
-            [clojure.spec.alpha :as s]))
+  (:require [malli.core :as m]
+            [malli.error :as me]
+            [malli.transform :as mt]))
+
+(def vertex
+  [:map
+   [:id :any]
+
+   [:demand {:optional true}
+    [:map
+     [:kwh :double]
+     [:kwp :double]
+     [:required {:optional true} :boolean]
+     [:off-network {:optional true} :boolean]
+
+     [:value {:optional true} :double]
+     [:value%kwp {:optional true} :double]
+     [:value%kwh {:optional true} :double]
+     [:count {:optional true} :int]
+     [:group {:optional true} :any]
+
+     [:insulation {:optional true}
+      [:* [:map
+           [:id :any]
+           [:cost {:optional true} :double]
+           [:cost%kwh {:optional true} :double]
+           [:maximum {:optional true} :double]]]]
+
+     [:alternatives {:optional true}
+      [:* [:map
+           [:id :any]
+           [:cost {:optional true} :double]
+           [:cost%kwh {:optional true} :double]
+           [:cost%kwp {:optional true} :double]
+           [:emissions {:optional true}
+            [:map-of :any :double]]]]]]
+
+    [:supply {:optional true}
+     [:map
+      [:capacity-kw :double]
+      [:capacity-kwh {:optional true} :double]
+      [:cost {:optional true} :double]
+      [:cost%kwh {:optional true} :double]
+      [:cost%kwp {:optional true} :double]
+      [:emissions {:optional true} [:map-of :any :double]]
+      [:exclusive-groups {:optional true} [:set :any]]]]]])
+
+(def edge
+  [:map
+   [:i :any]
+   [:j :any]
+   [:length :double]
+
+   [:cost%m {:optional true} :double]
+   [:cost%kwm {:optional true} :double]
+   [:required {:optional true} :boolean]
+   [:max-capacity%kwp {:optional true} :double]])
 
 (def network-problem
-  (ds/spec
-   ::network-problem
-
-   {:vertices
-    [{:id any?
-
-      (ds/opt :demand)
-      {:kwh number?
-       :kwp number?
-
-       ;; these two form a tristate; both-true is invalid
-       (ds/opt :required) boolean?
-       (ds/opt :off-network) boolean?
-
-       ;; value of connecting
-       (ds/opt :value) number?
-       (ds/opt :value%kwp) number?
-       (ds/opt :value%kwh) number?
-
-       (ds/opt :count) pos-int?
-
-       ;; Demands can be in a group.
-       ;; A whole group must be connected together.
-       ;; Group equivalence is determined by =
-       ;; No demand can be in two groups, WLOG.
-       (ds/opt :group) any?
-
-       (ds/opt :insulation)
-       [{:id any?
-         (ds/opt :cost) number?
-         (ds/opt :cost%kwh) number?
-         (ds/opt :maximum) number?}]
-
-       (ds/opt :alternatives)
-       [{:id any?
-         (ds/opt :cost) number?
-         (ds/opt :cost%kwh) number?
-         (ds/opt :cost%kwp) number?
-         (ds/opt :emissions) {any? number?}}]
-       }
-
-      (ds/opt :supply)
-      {:capacity-kw number?
-       (ds/opt :capacity-kwh) number?
-       (ds/opt :cost) number?
-       (ds/opt :cost%kwh) number?
-       (ds/opt :cost%kwp) number?
-       (ds/opt :emissions) {any? number?}
-
-       ;; only one supply from each exclusive group may be used.
-       ;; (ds/opt :exclusive-groups) (ds/maybe #{any?})
-       }
-      }]
+  (m/schema
+   [:map
+    [:emissions {:optional true}
+     [:map-of
+      :any [:map
+            [:cost {:optional true} :double]
+            [:maximum {:optional true} :double]]]]
     
-    (ds/opt :edges)
-    [{:i any?
-      :j any?
-      :length number?
-      (ds/opt :cost%m) number?
-      (ds/opt :cost%kwm) number?
-      (ds/opt :required) boolean?
-      (ds/opt :max-capacity%kwp) number?
-      }]
+    [:diversity-limit {:optional true} [:double
+                                        {:default 0.62}]]
+    [:diversity-rate {:optional true} [:double
+                                       {:default 1.0}]]
+    [:pipe-losses {:optional true}
+     [:map
+      [:kwp [:vector :double]]
+      [:w%m [:vector :double]]]]
     
-    (ds/opt :emissions) {any? {(ds/opt :cost) number? (ds/opt :maximum) number?}}
-    (ds/opt :diversity-limit) number?
-    (ds/opt :diversity-rate) number?
-    (ds/opt :pipe-losses) {:kwp  [number?] :w%m [number?]}
+    [:force-insulation {:optional true} :boolean]
+    [:supply-limit {:optional true} :int]
+    [:objective-scale [:double {:default 1.0}]]
+    [:objective-precision  [:double {:default 0.0}]]
+    [:edge-cost-precision  [:double {:default 0.0}]]
+    [:no-loops  {:optional true}
+     [:boolean {:default false}]]
+    [:objective
+     [:enum {:default :max-npv} :max-npv :max-kwh]]
 
-    (ds/opt :force-insulation) boolean?
-    (ds/opt :supply-limit) (ds/maybe integer?)
+    [:iteration-limit [:int {:default 1000}]]
+    [:time-limit [:double {:default 1.0}]]
+    [:mip-gap  [:double {:default 0.05}]]
+    [:param-gap [:double {:default 0.0}]]
+    [:should-be-feasible [:boolean {:default false}]]
+    
+    [:vertices [:+ vertex]]
+    [:edges [:+ edge]]
 
-    (ds/opt :objective-scale) (ds/maybe number?)
-    (ds/opt :objective-precision) (ds/maybe number?)
-    (ds/opt :edge-cost-precision) (ds/maybe number?)
-    (ds/opt :no-loops) (ds/maybe boolean?)
-    }
-   
-   )
-  )
+    [:constraints
+     ;; TODO a nice constraint to have here would be something like
+     ;; max NPV s.t. max capex = C
+     ;; but at the moment the model cannot see capex vs future costs.
+     ;; and it would be a big change to support this
+     (->> (for [var [:kwh :npv :length :linear-density]]
+            [var {:optional true}
+             [:map
+              [:min {:optional true} [:maybe :double]]
+              [:max {:optional true} [:maybe :double]]]])
+          (concat
+           (for [var [:building-count :connection-count]]
+             [var {:optional true}
+              [:map
+               [:min {:optional true} [:maybe :int]]
+               [:max {:optional true} [:maybe :int]]]]))
+          (into [:map {:default {}}]))]]))
+
+(let [coerce (m/coercer
+              network-problem
+              (mt/transformer
+               mt/json-transformer ;; cleans up doubles etc
+               (mt/default-value-transformer {::mt/add-optional-keys true})))]
+  (defn ensure-valid-problem
+    "Check problem is valid, or throw a diagnostic exception"
+    [problem]
+    (try
+      (coerce problem)
+      (catch clojure.lang.ExceptionInfo e
+        (throw (ex-info "Invalid network problem"
+                        (-> (ex-data e) :data :explain me/humanize)))))))
 
