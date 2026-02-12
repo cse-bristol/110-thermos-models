@@ -14,11 +14,11 @@
   (tagged-values [this year] "What are the nominal values by tag in
   `year`; Returns a series of maps with a :value key and other fields"))
 
-(deftype Series [type values]
+(deftype Series [tags values]
   PresentValue
   (nominal-value [_ year] (get values year 0))
-  (tagged-values [t year] [{:cost type
-                            :value (nominal-value t year)}]))
+  (tagged-values [t year] [(assoc tags
+                            :value (nominal-value t year))]))
 
 (deftype Equipment [tags capex opex repex lifetime]
   PresentValue
@@ -117,7 +117,7 @@
   ([xs] (pv-sequence xs *discount-rate* *accounting-period*))
   ([xs r p]
    (let [xs (take p xs)]
-     (present-value r p (->Series :pv (vec xs))))))
+     (present-value r p (->Series {:cost :pv} (vec xs))))))
 
 (defn pv-recurring
   ([x] (pv-recurring x *discount-rate* *accounting-period*))
