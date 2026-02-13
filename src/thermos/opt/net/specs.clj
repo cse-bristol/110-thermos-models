@@ -57,8 +57,19 @@
 
    [:cost%m {:optional true} :double]
    [:cost%kwm {:optional true} :double]
+
    [:required {:optional true} :boolean]
-   [:max-capacity%kwp {:optional true} :double]])
+
+   [:max-capacity%kwp {:optional true} :double]
+
+   ;; These are only relevant if there is an existing pipe.
+   ;; When there is an existing pipe, the upgrade costs get paid if
+   ;; the required capacity is over the existing capacity.
+   ;; The basic costs get paid in any case, so the upgrade cost
+   ;; has to be the delta.
+   [:existing-capacity%kwp {:optional true} :double]
+   [:upgrade-cost%m {:optional true}   :double]
+   [:upgrade-cost%kwm {:optional true} :double]])
 
 (def network-problem
   (m/schema
@@ -95,7 +106,7 @@
     [:should-be-feasible [:boolean {:default false}]]
     
     [:vertices [:+ vertex]]
-    [:edges [:+ edge]]
+    [:edges [:* edge]]
 
     [:constraints
      ;; TODO a nice constraint to have here would be something like

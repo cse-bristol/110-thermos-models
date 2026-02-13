@@ -134,7 +134,6 @@
                    objective-precision 0.0
                    edge-cost-precision 0.0}}]
   (let [problem (ensure-valid-problem problem)
-        
         flow-bounds (or (:bounds problem)
                         (bounds/compute-bounds problem))
 
@@ -156,7 +155,12 @@
         vtx        (into (set (map :id (:vertices problem)))
                          (mapcat identity edge))
         
-        arc        (into edge (map rev-edge edge))
+        arc           (into edge (map rev-edge edge))
+
+        ;; indexes only those arcs where there's already a pipe
+        existing-edge  (set (for [e (:edges problem)
+                                  :when (:existing-capacity%kwp e)]
+                              (as-edge (:i e) (:j e))))
         
         svtx       (set (map :id (filter :supply (:vertices problem))))
         dvtx       (set (map :id (filter :demand (:vertices problem))))
@@ -204,6 +208,14 @@
         (fn [e] (let [e (get arc-map e)]
                   (if e (* (:length e 0) (get e :cost%kwm 0)) 0)))
 
+        edge-fixed-upgrade
+        (fn [e] (let [e (get arc-map e)]
+                  (if e (* (:length e 0) (get e :upgrade-cost%m 0)) 0)))
+
+        edge-upgrade-per-kwp
+        (fn [e] (let [e (get arc-map e)]
+                  (if e (* (:length e 0) (get e :upgrade-cost%kwm 0)) 0)))
+        
         neighbours          (into {} (for [[i ijs] (group-by first arc)]
                                         [i (set (map second ijs))]))
 
@@ -425,14 +437,28 @@
                     max-delta%kw      (Math/abs (- max-flow min-flow))
                     cost-fix       (edge-fixed-cost e)
                     cost%kwp       (edge-cost-per-kwp e)
-                    max-delta%£    (* cost%kwp max-delta%kw)]
-                (if (and (not (zero? cost-fix))
-                         (<= (/ max-delta%£ cost-fix) edge-cost-precision))
-                  [:* [:+ [:AIN [i j]] [:AIN [j i]]]
-                   (+ cost-fix (* cost%kwp 0.5 (+ min-flow max-flow)))]
-                  [:+
-                   [:* [:+ [:AIN [i j]] [:AIN [j i]]] cost-fix]
-                   [:* [:EDGE-CAP-KW e] cost%kwp]])))]
+                    max-delta%£    (* cost%kwp max-delta%kw)
+
+                    has-existing   (existing-edge e)
+
+                    standard-cost
+                    (if (and (not (zero? cost-fix))
+                             (<= (/ max-delta%£ cost-fix) edge-cost-precision))
+                      [:* [:+ [:AIN [i j]] [:AIN [j i]]]
+                       (+ cost-fix (* cost%kwp 0.5 (+ min-flow max-flow)))]
+                      [:+
+                       [:* [:+ [:AIN [i j]] [:AIN [j i]]] cost-fix]
+                       [:* [:EDGE-CAP-KW e] cost%kwp]])
+
+                    upgrade-cost
+                    [:+
+                     [:* [:EUP e] (edge-fixed-upgrade e)]
+                     [:* [:EDGE-UP-CAP-KW e] (edge-upgrade-per-kwp e)]]
+                    ]
+                (if has-existing
+                  [:+ standard-cost upgrade-cost]
+                  standard-cost)
+                ))]
         
         emissions-cost
         [:+ (for [e emission]
@@ -467,6 +493,9 @@
 
         edge-max-flow ;; this is the max capacity when diversified.
         (fn [e] (-> (arc-map e) (:max-capacity%kwp 100000.0)))
+
+        edge-existing-capacity
+        (fn [e] (-> (arc-map e) (:existing-capacity%kwp 0.0)))
         
         flow-upper-bound ;; this is our best guess on the max
                          ;; un-diverse flow on this arc
@@ -543,6 +572,23 @@
       (for [a arc t period]
         [:<= [:ARC-FLOW-KW a t] [:* [:AIN a] [:lp.core/upper [:ARC-FLOW-KW a t]]]])
 
+      ;; existing edge related costs
+      (for [e existing-edge]
+        (list
+         ;; Force EUP on if we use enough capacity
+         [:<=
+          [:- [:EDGE-CAP-KW e] (edge-existing-capacity e)]
+          [:* [:EUP e] (edge-max-flow e)]]
+
+         ;; force EDGE-UP-CAP-KW = EDGE-CAP-KW if EUP = 1
+         ;; (a) zero if EUP is zero
+         [:<= [:EDGE-UP-CAP-KW e] [:* [:EUP e] (edge-max-flow e)]]
+         ;; (b) trivial
+         [:<= [:EDGE-UP-CAP-KW e] [:EDGE-CAP-KW e]]
+         ;; (c) when EUP is 1, >= EDGE-CAP-KW, otherwise >= something negative
+         [:>= [:EDGE-UP-CAP-KW e] [:- [:EDGE-CAP-KW e]
+                                   [:* [:- 1 [:EUP e]] (edge-max-flow e)]]]))
+      
       ;; Flow balance at each vertex
       (for [i vtx t period]
         (if (and (= :mean t) (contains? dvtx i) (not= 0.0 (avoided-demand-kwh i)))
@@ -760,21 +806,36 @@
 
           :TOTAL-KWH {}
           :TOTAL-NPV {}
-          
-          :DVIN {:type :binary :indexed-by [dvtx]
+
+          :DVIN {:doc "Is demand vertex i on the network"
+                 :type :binary :indexed-by [dvtx]
                  :value demand-connection-value
                  :fixed demand-connection-fixed}
           
-          :AIN  {:type :binary :indexed-by [arc]}
-          :SVIN {:type :binary :indexed-by [svtx]}
+          :AIN  {:doc "Is arc [i j] in the network"
+                 :type :binary :indexed-by [arc]}
+          :SVIN {:doc "Is supply i in the network"
+                 :type :binary :indexed-by [svtx]}
 
-          :ARC-FLOW-KW {:type :non-negative :indexed-by [arc period]
+          :EUP {:doc "Has edge [i j] been upgraded from an existing pipe"
+                :type :binary :indexed-by [existing-edge]}
+          
+          :ARC-FLOW-KW {:doc "How much power is flowing [i j] at peak or annual"
+                        :type :non-negative :indexed-by [arc period]
                         :upper flow-upper-bound}
           
-          :EDGE-CAP-KW {:type :non-negative :indexed-by [edge]
+          :EDGE-CAP-KW {:doc "How much (diversified) capacity must edge [i j] have"
+                        :type :non-negative :indexed-by [edge]
                         :upper edge-max-flow}
-          :SUPPLY-CAP-KW {:type :non-negative :indexed-by [svtx]}
-          :SUPPLY-KW {:type :non-negative :indexed-by [svtx period]}}
+
+          :EDGE-UP-CAP-KW {:doc "Equal to edge-cap-kw IF EUP is 1"
+                           :type :non-negative :indexed-by [existing-edge]
+                           :upper edge-max-flow}
+          
+          :SUPPLY-CAP-KW {:doc "How much (diversified) capacity must supply i have"
+                          :type :non-negative :indexed-by [svtx]}
+          :SUPPLY-KW {:doc "How much power is supply i emitting in peak / annual"
+                      :type :non-negative :indexed-by [svtx period]}}
 
        (not-empty alt-types)
        (merge
