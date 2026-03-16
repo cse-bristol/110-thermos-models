@@ -149,7 +149,7 @@
     (if claim
       (do
         (log/info "Solving with gurobi")
-        (gurobi/solve* lp settings))
+        (gurobi/solve* lp (fix-feastol settings true)))
 
       ;; start scip thread but hope for gurobi
       (let [result
