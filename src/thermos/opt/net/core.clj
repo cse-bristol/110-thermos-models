@@ -1273,8 +1273,7 @@
                             :or {solver :scip
                                  gurobi-lockfile "/tmp/thermos-gurobi-lockfile"}}]
   {:pre [(#{:scip :gurobi :best} solver)]}
-  (best/with-gurobi-claim (when (or (= :best solver) (= :gurobi solver))
-                            gurobi-lockfile)
+  (best/with-gurobi-claim (when (= :best solver) gurobi-lockfile)
     
     (log/info "Solving network problem")
     (let [problem             (-> (ensure-valid-problem problem)
