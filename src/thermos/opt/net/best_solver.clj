@@ -193,6 +193,7 @@
 
   However it guarantees cleanup so you will want it"
   [lockfile & body]
-  `(binding [*gurobi-lockfile* lockfile
-             *gurobi-claim* (atom (and lockfile (claim-gurobi lockfile)))]
-     (try ~@body (finally (release-gurobi @*gurobi-claim*)))))
+  `(let [lockfile# ~lockfile]
+     (binding [*gurobi-lockfile* lockfile#
+               *gurobi-claim* (atom (and lockfile# (claim-gurobi ~lockfile)))]
+       (try ~@body (finally (release-gurobi @*gurobi-claim*))))))
