@@ -4,7 +4,8 @@
 (ns thermos.opt.net.specs
   (:require [malli.core :as m]
             [malli.error :as me]
-            [malli.transform :as mt]))
+            [malli.transform :as mt]
+            [com.rpl.specter :as s]))
 
 (def vertex
   [:map
@@ -40,14 +41,26 @@
             [:map-of :any :double]]]]]]
 
     [:supply {:optional true}
-     [:map
-      [:capacity-kw :double]
-      [:capacity-kwh {:optional true} :double]
-      [:cost {:optional true} :double]
-      [:cost%kwh {:optional true} :double]
-      [:cost%kwp {:optional true} :double]
-      [:emissions {:optional true} [:map-of :any :double]]
-      [:exclusive-groups {:optional true} [:set :any]]]]]])
+     [:merge
+      [:or
+       [:map
+        [:cost {:optional true} :double]
+        [:cost%kwp {:optional true} :double]]
+
+       [:map
+        [:cost%kwp {:optional true}
+         ;; this branch is for a cost curve
+         ;; the older version above is upgraded to this
+         ;; internally
+         [:vector [:tuple :double :double]]]]]
+      
+      [:map
+       [:capacity-kw :double]
+       [:capacity-kwh {:optional true} :double]
+       [:cost%kwh {:optional true} :double]
+       
+       [:emissions {:optional true} [:map-of :any :double]]
+       [:exclusive-groups {:optional true} [:set :any]]]]]]])
 
 (def edge
   [:map
@@ -140,3 +153,22 @@
         (throw (ex-info "Invalid network problem"
                         (-> (ex-data e) :data :explain me/humanize)))))))
 
+(defn tidy-up-problem
+  "Given a (valid) problem, transform it to a consistent form.
+  This is a compatibility layer"
+  [problem]
+
+  ;; upgrade supply cost definition from £x + £x/kw to f(kW)
+  (s/transform
+   [:vertices s/ALL (s/must :supply)
+    (s/pred #(or (number? (:cost %))
+                 (number? (:cost%kwp %))))]
+   (fn [s]
+     (-> s
+         (assoc :cost%kwp
+                [[0 (:cost s 0)]
+                 [(:capacity-kw s)
+                  (+ (:cost s)
+                     (* (:capacity-kw s) (:cost%kwp s 0)))]])
+         (dissoc :cost)))
+   problem))

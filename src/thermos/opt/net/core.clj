@@ -5,10 +5,12 @@
   "Thermos network optimisation model. Translated from the python version."
   (:require [lp.scip :as scip]
             [lp.gurobi :as gurobi]
+            [lp.ext]
             [com.rpl.specter :as s]
             [clojure.tools.logging :as log]
             [clojure.java.io :as io]
-            [thermos.opt.net.specs :refer [ensure-valid-problem]]
+            [thermos.opt.net.specs :refer [ensure-valid-problem
+                                           tidy-up-problem]]
             [thermos.opt.net.best-solver :refer [scip-settings] :as best]
             [thermos.opt.net.diversity :refer [diversity-factor]]
             [thermos.opt.net.bounds :as bounds]
@@ -286,9 +288,10 @@
                {} svtx)]
           (fn [i] (get supply-bounds i)))
         
-        supply-fixed-cost   (fn [i] (or (-> (vertices i) :supply :cost) 0))
         supply-cost-per-kwh (fn [i] (or (-> (vertices i) :supply (get :cost%kwh)) 0))
-        supply-cost-per-kwp (fn [i] (or (-> (vertices i) :supply (get :cost%kwp)) 0))
+        supply-cost-curve   (fn [i] (or (-> (vertices i) :supply (get :cost%kwp))
+                                        [[0 0] [(supply-max-capacity i) 0]]))
+        
         supply-emissions-per-kw (fn [i e]
                                   (* (or (-> (vertices i) :supply :emissions (get e)) 0)
                                      hours-per-year))
@@ -419,10 +422,9 @@
 
         total-supply-cost
         [:+ (for [i svtx]
-             [:+
-              [:* [:SVIN i] (supply-fixed-cost i)]
-              [:* [:SUPPLY-CAP-KW i] (supply-cost-per-kwp i)]
-              [:* [:SUPPLY-KW i :mean] (supply-cost-per-kwh i) hours-per-year]])]
+              [:+
+               [:lp.ext/piecewise (into [[0 0]] (supply-cost-curve i)) [:SUPPLY-CAP-KW i]]
+               [:* [:SUPPLY-KW i :mean] (supply-cost-per-kwh i) hours-per-year]])]
 
         total-pipe-cost
         [:+ (for [e edge :let [[i j] e]]
@@ -1275,7 +1277,8 @@
                             gurobi-lockfile)
     
     (log/info "Solving network problem")
-    (let [problem             (ensure-valid-problem problem)
+    (let [problem             (-> (ensure-valid-problem problem)
+                                  (tidy-up-problem))
           objective-scale     (or (:objective-scale problem) 1.0)
           objective-precision (or (:objective-precision problem) 0.0)
           edge-cost-precision (or (:edge-cost-precision problem) 0.0)
