@@ -3,7 +3,8 @@
   (:require [clojure.string :as string]
             [clojure.java.io :as io]
             [lp.scip :as scip]
-            [lp.gurobi :as gurobi])
+            [lp.gurobi :as gurobi]
+            [clojure.tools.logging :as log])
   (:import [java.io RandomAccessFile]
            [java.nio.channels FileLock]
            [java.util.concurrent CancellationException]))
@@ -115,11 +116,12 @@
         (if lock
           {:raf raf :channel channel :lock lock}
           (do
+            (log/infof "gurobi lock %s busy" lockfile-path)
             (.close channel)
             (.close raf)
             nil)))
       (catch Exception _ nil))
-    nil))
+    (log/info "gurobi_cl is not installed")))
 
 (defn release-gurobi [claim]
   (when claim
@@ -145,11 +147,14 @@
     (reset! *gurobi-claim* claim)
 
     (if claim
-      (gurobi/solve* lp settings)
+      (do
+        (log/info "Solving with gurobi")
+        (gurobi/solve* lp settings))
 
       ;; start scip thread but hope for gurobi
       (let [result
             (future
+              (log/info "Solving with scip")
               (scip/solve* lp (fix-feastol
                                (merge scip-settings settings)
                                false)))
@@ -172,6 +177,7 @@
         (try @result
              (catch CancellationException e
                ;; we got gurobi now so use that instead
+               (log/info "Restart with now-available gurobi")
                (gurobi/solve* lp (fix-feastol settings true)))
              (finally
                ;; make sure we safely cleanup the claim thread before returning
