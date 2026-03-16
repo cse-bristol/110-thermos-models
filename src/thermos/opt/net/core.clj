@@ -9,6 +9,7 @@
             [clojure.tools.logging :as log]
             [clojure.java.io :as io]
             [thermos.opt.net.specs :refer [ensure-valid-problem]]
+            [thermos.opt.net.best-solver :refer [scip-settings] :as best]
             [thermos.opt.net.diversity :refer [diversity-factor]]
             [thermos.opt.net.bounds :as bounds]
             [thermos.opt.net.graph :as graph]
@@ -19,10 +20,17 @@
       env-retry   (env "THERMOS_RETRY_FEASTOL")]
   
   (defn initial-feastol [solver]
-    (or env-initial (if (= solver :gurobi) "1e-6" "1e-3")))
+    (or env-initial
+        (case solver
+          :gurobi "1e-6"
+          :scip   "1e-3"
+          :best   :initial)))
   
   (defn retry-feastol   [solver]
-    (or env-retry (if (= solver :gurobi) "1e-9" "1e-6"))))
+    (case solver
+          :gurobi "1e-9"
+          :scip   "1e-6"
+          :best   :retry)))
 
 (def ^:const hours-per-year (* 24.0 365))
 
@@ -1081,95 +1089,12 @@
        (for [s (::svtx mip)]
          [s (r (sd s))])])))
 
-(def scip-settings
-  {"heuristics/actconsdiving/freq" "20"
-   "heuristics/adaptivediving/freq" "3"
-   "heuristics/adaptivediving/maxlpiterquot" "0.15"
-   "heuristics/bound/freq" "20"
-   "heuristics/clique/freq" "20"
-   "heuristics/coefdiving/freq" "20"
-   "heuristics/completesol/freq" "20"
-   "heuristics/conflictdiving/freq" "5"
-   "heuristics/conflictdiving/maxlpiterquot" "0.225"
-   "heuristics/conflictdiving/maxlpiterofs" "1500"
-   "heuristics/crossover/freq" "10"
-   "heuristics/crossover/nwaitingnodes" "20"
-   "heuristics/crossover/nodesquot" "0.15"
-   "heuristics/crossover/minfixingrate" "0.5"
-   "heuristics/crossover/dontwaitatroot" "TRUE"
-   "heuristics/dins/freq" "-1"
-   "heuristics/distributiondiving/freq" "5"
-   "heuristics/distributiondiving/maxlpiterquot" "0.075"
-   "heuristics/distributiondiving/maxlpiterofs" "1500"
-   "heuristics/farkasdiving/freq" "-1"
-   "heuristics/farkasdiving/maxlpiterquot" "0.075"
-   "heuristics/farkasdiving/maxlpiterofs" "1500"
-   "heuristics/feaspump/freq" "10"
-   "heuristics/feaspump/maxlpiterquot" "0.015"
-   "heuristics/feaspump/maxlpiterofs" "1500"
-   "heuristics/fixandinfer/freq" "20"
-   "heuristics/fracdiving/freq" "5"
-   "heuristics/fracdiving/maxlpiterquot" "0.075"
-   "heuristics/fracdiving/maxlpiterofs" "1500"
-   "heuristics/gins/freq" "10"
-   "heuristics/guideddiving/freq" "5"
-   "heuristics/guideddiving/maxlpiterquot" "0.075"
-   "heuristics/guideddiving/maxlpiterofs" "1500"
-   "heuristics/zeroobj/freq" "20"
-   "heuristics/intdiving/freq" "20"
-   "heuristics/intshifting/freq" "5"
-   "heuristics/linesearchdiving/freq" "5"
-   "heuristics/linesearchdiving/maxlpiterquot" "0.075"
-   "heuristics/linesearchdiving/maxlpiterofs" "1500"
-   "heuristics/localbranching/freq" "-1"
-   "heuristics/locks/freq" "20"
-   "heuristics/lpface/freq" "8"
-   "heuristics/alns/freq" "10"
-   "heuristics/alns/trustregion/active" "TRUE"
-   "heuristics/alns/nodesofs" "2000"
-   "heuristics/alns/nodesquot" "0.2"
-   "heuristics/nlpdiving/freq" "5"
-   "heuristics/mutation/freq" "20"
-   "heuristics/multistart/freq" "20"
-   "heuristics/mpec/freq" "25"
-   "heuristics/objpscostdiving/freq" "10"
-   "heuristics/objpscostdiving/maxlpiterquot" "0.015"
-   "heuristics/objpscostdiving/maxlpiterofs" "1500"
-   "heuristics/octane/freq" "20"
-   "heuristics/ofins/freq" "20"
-   "heuristics/padm/freq" "20"
-   "heuristics/proximity/freq" "20"
-   "heuristics/pscostdiving/freq" "5"
-   "heuristics/pscostdiving/maxlpiterquot" "0.075"
-   "heuristics/pscostdiving/maxlpiterofs" "1500"
-   "heuristics/randrounding/freq" "10"
-   "heuristics/rens/freq" "20"
-   "heuristics/rens/minfixingrate" "0.3"
-   "heuristics/rens/nodesofs" "2000"
-   "heuristics/reoptsols/freq" "20"
-   "heuristics/repair/freq" "20"
-   "heuristics/rins/freq" "10"
-   "heuristics/rootsoldiving/freq" "10"
-   "heuristics/rootsoldiving/maxlpiterquot" "0.015"
-   "heuristics/rootsoldiving/maxlpiterofs" "1500"
-   "heuristics/shiftandpropagate/freq" "20"
-   "heuristics/shifting/freq" "5"
-   "heuristics/trivial/freq" "20"
-   "heuristics/trivialnegation/freq" "20"
-   "heuristics/trustregion/freq" "-1"
-   "heuristics/twoopt/freq" "20"
-   "heuristics/undercover/freq" "20"
-   "heuristics/vbounds/freq" "20"
-   "heuristics/veclendiving/freq" "5"
-   "heuristics/veclendiving/maxlpiterquot" "0.075"
-   "heuristics/veclendiving/maxlpiterofs" "1500"
-   "separating/flowcover/freq" "8"})
-
 (defn- solve [mip & {:keys [mip-gap time-limit adjust-feastol solver]
-                     :or {solver :scip}}]
+                     :or {solver :gurobi}}]
   (let [run-solver (case solver
                      :scip (fn [lp s] (scip/solve* lp (merge scip-settings s)))
-                     :gurobi gurobi/solve*)
+                     :gurobi gurobi/solve*
+                     :best best/solve*)
         initial-feastol (initial-feastol solver)
         retry-feastol   (retry-feastol solver)]
     (loop [attempts 0
@@ -1342,119 +1267,123 @@
                     hr (- hr (* d 24))]
                 (str d "d" (int hr) "h")))))))))
 
-(defn run-model [problem & {:keys [solver]
-                            :or {solver :scip}}]
-  {:pre [(#{:scip :gurobi} solver)]}
-  (log/info "Solving network problem")
-  (let [problem             (ensure-valid-problem problem)
-        objective-scale     (or (:objective-scale problem) 1.0)
-        objective-precision (or (:objective-precision problem) 0.0)
-        edge-cost-precision (or (:edge-cost-precision problem) 0.0)
+(defn run-model [problem & {:keys [solver gurobi-lockfile]
+                            :or {solver :scip
+                                 gurobi-lockfile "/tmp/thermos-gurobi-lockfile"}}]
+  {:pre [(#{:scip :gurobi :best} solver)]}
+  (best/with-gurobi-claim (when (or (= :best solver) (= :gurobi solver))
+                            gurobi-lockfile)
+    
+    (log/info "Solving network problem")
+    (let [problem             (ensure-valid-problem problem)
+          objective-scale     (or (:objective-scale problem) 1.0)
+          objective-precision (or (:objective-precision problem) 0.0)
+          edge-cost-precision (or (:edge-cost-precision problem) 0.0)
 
-        mip             (construct-mip problem
-                                       :objective-scale objective-scale
-                                       :objective-precision objective-precision
-                                       :edge-cost-precision edge-cost-precision)
-        
-        _               (log/info "Constructed MIP")
-        iteration-limit    (:iteration-limit problem 1000)
-        time-limit         (:time-limit problem 1.0)
-        mip-gap            (:mip-gap problem 0.05)
-        param-fix-gap      (:param-gap problem 0)
-        should-be-feasible (:should-be-feasible problem false)
-        
-        start-time      (System/currentTimeMillis)
-        end-time (+ (* time-limit 1000 3600) start-time)
-        most-negative (- Double/MAX_VALUE)
-        ]
-    (log/info
-     (format "%-4s%-8s%-8s%-8s%-3s%-10s%-6s%-6s%-12s%-7s%-7s"
-             "N" "Tn" "T" "Tr" ">" "VALUE" "NV" "NE" "STATE" "δFIX%" "GAP%"))
+          mip             (construct-mip problem
+                                         :objective-scale objective-scale
+                                         :objective-precision objective-precision
+                                         :edge-cost-precision edge-cost-precision)
+          
+          _               (log/info "Constructed MIP")
+          iteration-limit    (:iteration-limit problem 1000)
+          time-limit         (:time-limit problem 1.0)
+          mip-gap            (:mip-gap problem 0.05)
+          param-fix-gap      (:param-gap problem 0)
+          should-be-feasible (:should-be-feasible problem false)
+          
+          start-time      (System/currentTimeMillis)
+          end-time (+ (* time-limit 1000 3600) start-time)
+          most-negative (- Double/MAX_VALUE)
+          ]
+      (log/info
+       (format "%-4s%-8s%-8s%-8s%-3s%-10s%-6s%-6s%-12s%-7s%-7s"
+               "N" "Tn" "T" "Tr" ">" "VALUE" "NV" "NE" "STATE" "δFIX%" "GAP%"))
 
-    (loop [mip      mip ;; comes parameterised out of the gate
-           seen     #{} ;; decision sets we have already seen
-           iters    0   ;; number of tries
-           obj-vals nil ;; objective value sequence we saw
-           best     nil ;; best so far
-           ]
-      (let [iteration-start (System/currentTimeMillis)
+      (loop [mip      mip ;; comes parameterised out of the gate
+             seen     #{} ;; decision sets we have already seen
+             iters    0   ;; number of tries
+             obj-vals nil ;; objective value sequence we saw
+             best     nil ;; best so far
+             ]
+        (let [iteration-start (System/currentTimeMillis)
 
-            solved-mip (solve mip
-                              :solver solver
-                              :adjust-feastol should-be-feasible
-                              :mip-gap mip-gap
-                              :time-limit
-                              (max 60 (/ (- end-time iteration-start) 1000.0)))
+              solved-mip (solve mip
+                                :solver solver
+                                :adjust-feastol should-be-feasible
+                                :mip-gap mip-gap
+                                :time-limit
+                                (max 60 (/ (- end-time iteration-start) 1000.0)))
 
-            decisions (summary-decisions solved-mip)
+              decisions (summary-decisions solved-mip)
 
-            solution-exists (-> solved-mip :solution :exists)
-            
-            best       (if (and
-                            solution-exists
-                            (> (-> solved-mip :solution :value (or most-negative))
-                               (-> best       :solution :value (or most-negative))))
-                         solved-mip (or best solved-mip))
+              solution-exists (-> solved-mip :solution :exists)
+              
+              best       (if (and
+                              solution-exists
+                              (> (-> solved-mip :solution :value (or most-negative))
+                                 (-> best       :solution :value (or most-negative))))
+                           solved-mip (or best solved-mip))
 
-            is-stable     (:stable (:solution solved-mip))
-            has-looped    (contains? seen decisions)
-            out-of-iters  (> iters iteration-limit)
-            iteration-end (System/currentTimeMillis)
-            out-of-time   (> iteration-end end-time)
-            remaining-time (- end-time iteration-end)
-            parameter-delta (when solution-exists
-                              (let [{:keys [value free-value]} (:solution solved-mip)]
-                                (when (and value free-value)
-                                  (if (= value free-value) 0
-                                      (/ (- value free-value)
-                                         (inc (Math/abs (max value free-value))))))))
-            param-effect-small
-            (and solution-exists parameter-delta
-                 (<= (Math/abs parameter-delta) param-fix-gap))
-            ]
+              is-stable     (:stable (:solution solved-mip))
+              has-looped    (contains? seen decisions)
+              out-of-iters  (> iters iteration-limit)
+              iteration-end (System/currentTimeMillis)
+              out-of-time   (> iteration-end end-time)
+              remaining-time (- end-time iteration-end)
+              parameter-delta (when solution-exists
+                                (let [{:keys [value free-value]} (:solution solved-mip)]
+                                  (when (and value free-value)
+                                    (if (= value free-value) 0
+                                        (/ (- value free-value)
+                                           (inc (Math/abs (max value free-value))))))))
+              param-effect-small
+              (and solution-exists parameter-delta
+                   (<= (Math/abs parameter-delta) param-fix-gap))
+              ]
 
-        (log/info (try (format "%-4d%-8s%-8s%-8s%-3s%-10.2g%-6d%-6d%-12s%-7.1g%-7.2g"
-                               iters
-                               (human-time (- iteration-end iteration-start))
-                               (human-time (- iteration-end start-time))
-                               (human-time remaining-time)
-                               
-                               (if (identical? best solved-mip) "*" "-")
-                               (or (:value  (:solution solved-mip)) Double/NaN)
+          (log/info (try (format "%-4d%-8s%-8s%-8s%-3s%-10.2g%-6d%-6d%-12s%-7.1g%-7.2g"
+                                 iters
+                                 (human-time (- iteration-end iteration-start))
+                                 (human-time (- iteration-end start-time))
+                                 (human-time remaining-time)
+                                 
+                                 (if (identical? best solved-mip) "*" "-")
+                                 (or (:value  (:solution solved-mip)) Double/NaN)
 
-                               (try (if solution-exists
-                                      (-> solved-mip :vars :DVIN :value vals
-                                          (->> (reduce (fn [n v] (cond-> n v inc)) 0)))
-                                      -1)
-                                    (catch Exception e -1))
+                                 (try (if solution-exists
+                                        (-> solved-mip :vars :DVIN :value vals
+                                            (->> (reduce (fn [n v] (cond-> n v inc)) 0)))
+                                        -1)
+                                      (catch Exception e -1))
 
-                               (try (if solution-exists
-                                      (-> solved-mip :vars :AIN  :value vals
-                                          (->> (reduce (fn [n v] (cond-> n v inc)) 0)))
-                                      -1)
-                                    (catch Exception e -1))
+                                 (try (if solution-exists
+                                        (-> solved-mip :vars :AIN  :value vals
+                                            (->> (reduce (fn [n v] (cond-> n v inc)) 0)))
+                                        -1)
+                                      (catch Exception e -1))
 
-                               (:reason (:solution solved-mip))
-                               (* (or parameter-delta Double/NaN) 100.0)
-                               (* (or (:gap (:solution solved-mip)) Double/NaN) 100.0))
-                       
-                       (catch Exception e
-                         (log/error e "Unable to format row in table")
-                         (str (dissoc (:solution solved-mip) :log)))))
-        
-        (if (or has-looped out-of-iters out-of-time is-stable param-effect-small)
-          (do
-            (when param-effect-small (log/info "Parameter fixing has small effect") )
-            (when is-stable    (log/info "Solution is stable"))
-            (when has-looped   (log/info "Solution is looping"))
-            (when out-of-iters (log/info "Iteration limit reached"))
-            (when out-of-time  (log/info "Time limit reached"))
-            (log/info "Best solution:" (dissoc (:solution best) :log))
-            (output-solution best iters obj-vals))
-          (recur solved-mip (conj seen decisions) (inc iters)
-                 (conj obj-vals (:value (:solution solved-mip)))
-                 best)
-          )))))
+                                 (:reason (:solution solved-mip))
+                                 (* (or parameter-delta Double/NaN) 100.0)
+                                 (* (or (:gap (:solution solved-mip)) Double/NaN) 100.0))
+                         
+                         (catch Exception e
+                           (log/error e "Unable to format row in table")
+                           (str (dissoc (:solution solved-mip) :log)))))
+          
+          (if (or has-looped out-of-iters out-of-time is-stable param-effect-small)
+            (do
+              (when param-effect-small (log/info "Parameter fixing has small effect") )
+              (when is-stable    (log/info "Solution is stable"))
+              (when has-looped   (log/info "Solution is looping"))
+              (when out-of-iters (log/info "Iteration limit reached"))
+              (when out-of-time  (log/info "Time limit reached"))
+              (log/info "Best solution:" (dissoc (:solution best) :log))
+              (output-solution best iters obj-vals))
+            (recur solved-mip (conj seen decisions) (inc iters)
+                   (conj obj-vals (:value (:solution solved-mip)))
+                   best)
+            ))))))
 
 (comment
   (def problem (with-open [r (java.io.PushbackReader. (io/reader "/home/hinton/tmp/problem.edn"))]
