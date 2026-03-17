@@ -1,5 +1,21 @@
 (ns thermos.opt.net.best-solver
-  "Support for using the best available solver"
+  "Support for using the best available solver
+
+  The main model runs a loop in which it calls on a solver.
+
+  This file provides `solve*` which can be used like gurobi/solve* or scip/solve*.
+
+  `solve*` should only be used within a call to `with-lock` with a valid lockfile.
+
+  Within the scope of `with-lock`, calls to `solve*` will use gurobi if they
+  can get the lock, and will hold the lock between calls once they have acquired it.
+
+  We use the lock instead of depending on the gurobi license, because we can't hold
+  the license between runs of gurobi_cl.
+
+  The lock is awaited using fcntl FD locks, which should produce approximately
+  fair queueing between processes, but that's up to the kernel.  
+  "
   (:require [clojure.string :as string]
             [clojure.java.io :as io]
             [lp.scip :as scip]
@@ -107,28 +123,44 @@
      (fn [binary]
        (some #(has-exe % binary) dirs)))))
 
-(defn claim-gurobi [lockfile-path]
-  (if (installed? "gurobi_cl")
+(defn claim-lock
+  "Try and claim a lock - returns a promise or a future you can wait on"
+  [lockfile]
+  (when lockfile
     (try
-      (let [raf (RandomAccessFile. lockfile-path "rw")
-            channel (.getChannel raf)
-            lock (.tryLock channel)]
-        (if lock
-          {:raf raf :channel channel :lock lock}
-          (do
-            (log/infof "gurobi lock %s busy" lockfile-path)
-            (.close channel)
-            (.close raf)
-            nil)))
-      (catch Exception _ nil))
-    (log/info "gurobi_cl is not installed")))
+      (let [raf (RandomAccessFile. lockfile "rw")
+            chan (.getChannel raf)]
+        (future
+          (let [lock (.lock chan)]
+            (try
+              [lock chan raf]
+              (catch InterruptedException _
+                (try (.release lock) (catch Exception _))
+                (try (.close chan) (catch Exception _))
+                (try (.close raf) (catch Exception _)))))))
+      (catch Exception _))))
 
-(defn release-gurobi [claim]
-  (when claim
-    (let [{:keys [lock channel raf]} claim]
-      (try (.release lock) (catch Exception _))
-      (try (.close channel) (catch Exception _))
-      (try (.close raf) (catch Exception _)))))
+(defn release-lock [lock-future]
+  (when lock-future
+    (try (future-cancel lock-future)
+         (catch Exception e))
+    (try (let [[lock chan raf] @lock-future]
+           (try (.release lock) (catch Exception e) )
+           
+           (try (.close chan) (catch Exception e))
+           (try (.close raf) (catch Exception e ))
+           :released)
+         (catch CancellationException e))))
+
+(def ^:dynamic *gurobi-lock* nil)
+
+(defmacro with-lock [lockfile & body]
+  `(binding [*gurobi-lock* (and (installed? "gurobi_cl")
+                                (claim-lock ~lockfile))]
+     (try
+       (Thread/sleep 100)
+       ~@body
+       (finally (release-lock *gurobi-lock*)))))
 
 (defn- fix-feastol [settings has-gurobi]
   ;; this is a bit ugly
@@ -137,63 +169,35 @@
             {:initial "1e-6" :retry "1e-9"}
             {:initial "1e-3" :retry "1e-6"})))
 
-(def ^:dynamic *gurobi-claim* nil)
-(def ^:dynamic *gurobi-lockfile* nil)
-
 (defn solve* [lp settings]
-  (let [claim? *gurobi-claim*
-        lockfile *gurobi-lockfile*
-        claim (or @*gurobi-claim* (claim-gurobi lockfile))]
-    (reset! *gurobi-claim* claim)
+  (cond
+    (not *gurobi-lock*)
+    (scip/solve* lp (fix-feastol
+                     (merge scip-settings settings)
+                     false))
 
-    (if claim
-      (do
-        (log/info "Solving with gurobi")
-        (gurobi/solve* lp (fix-feastol settings true)))
+    (future-done? *gurobi-lock*)
+    ;; we have the lock
+    (gurobi/solve* lp (fix-feastol settings true))
 
-      ;; start scip thread but hope for gurobi
-      (let [result
-            (future
-              (log/info "Solving with scip")
-              (scip/solve* lp (fix-feastol
-                               (merge scip-settings settings)
-                               false)))
+    :else
+    ;; we await the lock
+    (let [scip-solution
+          (future
+            (scip/solve* lp (fix-feastol
+                             (merge scip-settings settings)
+                             false)))
 
-            
-            claim-thread
-            (Thread.
-             #(loop []
-                (if-let [claim (claim-gurobi lockfile)]
-                  (do (reset! claim? claim)
-                      (future-cancel result))
-                  (do
-                    (let [stopped
-                          (try
-                            (Thread/sleep 10000)
-                            false
-                            (catch InterruptedException _ true))]
-                      (when-not stopped (recur)))))))]
-        (.start claim-thread)
-        (try @result
-             (catch CancellationException e
-               ;; we got gurobi now so use that instead
-               (log/info "Restart with now-available gurobi")
-               (gurobi/solve* lp (fix-feastol settings true)))
-             (finally
-               ;; make sure we safely cleanup the claim thread before returning
-               ;; so that if we get the claim we definitely release it later.
-               (.interrupt claim-thread)
-               (.join claim-thread)))))))
+          lock-waiter (future
+                        (let [lock @*gurobi-lock*]
+                          (future-cancel scip-solution)))
+          ]
+      (try
+        @scip-solution
+        (catch CancellationException e
+          ;; we got gurobi now so use that instead
+          (log/info "Restart with now-available gurobi")
+          (gurobi/solve* lp (fix-feastol settings true)))
+        (finally (future-cancel lock-waiter))))))
 
-(defmacro with-gurobi-claim
-  "This is the public interface which must be used around solve* above.
 
-  If `wanted` is false we won't do the initial claim, so you can safely call this
-  if you're not going to use solve* either.
-
-  However it guarantees cleanup so you will want it"
-  [lockfile & body]
-  `(let [lockfile# ~lockfile]
-     (binding [*gurobi-lockfile* lockfile#
-               *gurobi-claim* (atom (and lockfile# (claim-gurobi ~lockfile)))]
-       (try ~@body (finally (release-gurobi @*gurobi-claim*))))))
