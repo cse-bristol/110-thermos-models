@@ -346,12 +346,12 @@
         ;; Some common subexpressions:
 
         network-emissions
-        (for [i svtx] [:* [:SUPPLY-KW i :mean] (supply-emissions-per-kw i e)])
+        (fn [e] (for [i svtx] [:* [:SUPPLY-KW i :mean] (supply-emissions-per-kw i e)]))
         
         total-emissions
         (fn [e]
           [:+
-           network-emissions
+           (network-emissions e)
            (for [i dvtx a alt-types :let [f (alternative-emissions-per-kwh i a e)]]
              [:-
               [:* [:ALT-IN i a] (demand-kwh i) f]
