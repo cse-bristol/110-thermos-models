@@ -91,7 +91,9 @@
      [:map-of
       :any [:map
             [:cost {:optional true} :double]
-            [:maximum {:optional true} :double]]]]
+            [:maximum {:optional true} :double]
+            [:maximum-factor {:optional true} :double]
+            ]]]
     
     [:diversity-limit {:optional true} [:double
                                         {:default 0.62}]]

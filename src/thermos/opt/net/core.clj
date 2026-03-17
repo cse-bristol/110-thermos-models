@@ -310,7 +310,8 @@
                                        0))
         
         emissions-cost-per-kg    (fn [e] (or (-> (emissions e) :cost) 0))
-        emissions-limit          (fn [e] (-> (emissions e) :limit))
+        emissions-limit          (fn [e] (-> (emissions e) :maximum))
+        emissions-factor-limit   (fn [e] (-> (emissions e) :maximum-factor))
 
         insulation-attr          (fn [i it a]
                                    (-> (vertices i) :demand :insulation
@@ -343,11 +344,14 @@
                                                         (reduce + 0)))]))
         
         ;; Some common subexpressions:
+
+        network-emissions
+        (for [i svtx] [:* [:SUPPLY-KW i :mean] (supply-emissions-per-kw i e)])
         
         total-emissions
         (fn [e]
           [:+
-           (for [i svtx] [:* [:SUPPLY-KW i :mean] (supply-emissions-per-kw i e)])
+           network-emissions
            (for [i dvtx a alt-types :let [f (alternative-emissions-per-kwh i a e)]]
              [:-
               [:* [:ALT-IN i a] (demand-kwh i) f]
@@ -672,6 +676,11 @@
             :let [lim (emissions-limit e)] :when lim]
         [:<= (total-emissions e) lim])
 
+      ;; factor limits
+      (for [e emission
+            :let [lim (emissions-factor-limit e)] :when lim]
+        [:<= (total-emissions e) [:* lim :TOTAL-KWH]])
+      
       ;; rules for alternatives
       ;; 1. we must pick a heating system
       (for [i dvtx
