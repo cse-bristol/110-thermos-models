@@ -1396,6 +1396,155 @@
                    best)
             ))))))
 
+(defn explain-infeasible
+  "Return a list of reasons why problem could be infeasible.
+  This is a vector of pairs, the first item being a keyword and the second a message."
+  [problem]
+  (let [problem (-> (ensure-valid-problem problem)
+                    (tidy-up-problem))
+
+        limited-emissions (for [[k v] (:emissions problem)
+                                :when (or (:maximum v)
+                                          (:maximum-factor v))]
+                            [:emissions (format "Emissions of %s are constrained " (name k))])
+        
+        vertices (:vertices problem)
+        edges    (:edges problem)
+
+        available-supply-kw
+        (->> vertices (keep (comp :capacity-kw :supply)) (reduce +))
+
+        available-supply-kwh
+        (->> vertices (keep (comp :capacity-kwh :supply)) (reduce +))
+
+        supply-count
+        (->> vertices (filter (comp :capacity-kw :supply)) count)
+
+        required-buildings
+        (->> vertices (keep :demand) (filter :required))
+
+        optional-buildings
+        (->> vertices (keep :demand) (remove :required))
+
+        required-demand-kw
+        (->> required-buildings (keep :kwp) (reduce +))
+
+        required-demand-kwh
+        (->> required-buildings (keep :kwh) (reduce +))
+
+        required-connection-count
+        (->> required-buildings (keep :count) (reduce +))
+
+        required-building-count
+        (count required-buildings)
+
+        optional-demand-kw
+        (->> optional-buildings (keep :kwp) (reduce +))
+
+        optional-demand-kwh
+        (->> optional-buildings (keep :kwh) (reduce +))
+
+        total-demand-kw  (+ required-demand-kw optional-demand-kw)
+        total-demand-kwh (+ required-demand-kwh optional-demand-kwh)
+
+        total-building-count
+        (count (filter (comp :demand) vertices))
+
+        total-connection-count
+        (->> vertices (keep :demand) (keep :count) (reduce +))
+
+        path-min-kw
+        (->> edges (keep :max-capacity%kwp)
+             (reduce max Double/POSITIVE_INFINITY))
+
+        total-edge-length
+        (->> edges (keep :length) (reduce + 0))
+
+        {{min-kwh :min max-kwh :max} :kwh
+         {min-npv :min max-npv :max} :npv
+         {min-length :min max-length :max} :length
+         {min-linear-density :min max-linear-density :max} :linear-density
+         {min-building-count :min max-building-count :max} :building-count
+         {min-connection-count :min max-connection-count :max} :connection-count} (:constraints problem)
+        ]
+    (cond-> []
+      ;; Supply vs required demand checks
+      (< (* 0.8 available-supply-kw) required-demand-kw)
+      (conj
+       [:not-enough-peak
+        (format "Required peak demand is %.2f%% of available peak capacity"
+                (* 100.0 (/ (double required-demand-kw)
+                            (double available-supply-kw))))])
+
+      (< (* 0.8 available-supply-kwh) required-demand-kwh)
+      (conj
+       [:not-enough-annual
+        (format "Required annual demand is %.2f%% of available output"
+                (* 100.0 (/ (double required-demand-kwh)
+                            (double available-supply-kwh))))])
+
+      (zero? supply-count)
+      (conj
+       [:no-supply "There are no supply points in the network"])
+
+      (< path-min-kw required-demand-kw)
+      (conj [:limited-paths
+             (format "Some paths have a limited maximum capacity (%.2f kW)" path-min-kw)])
+
+      (zero? total-building-count)
+      (conj [:no-demand "There are no demands in the network"])
+
+      (and min-building-count (> min-building-count total-building-count))
+      (conj [:not-enough-buildings
+             (format "Minimum building count constraint (%d) exceeds total available buildings (%d)"
+                     min-building-count total-building-count)])
+
+      ;; Required buildings exceed maximum building count
+      (and max-building-count (> required-building-count max-building-count))
+      (conj [:too-many-required-buildings
+             (format "Number of required buildings (%d) exceeds maximum building count constraint (%d)"
+                     required-building-count max-building-count)])
+
+      ;; Connection count constraints
+      (and min-connection-count (> min-connection-count total-connection-count))
+      (conj [:not-enough-connections
+             (format "Minimum connection count constraint (%d) exceeds total available connections (%d)"
+                     min-connection-count total-connection-count)])
+
+      (and max-connection-count (> required-connection-count max-connection-count))
+      (conj [:too-many-required-connections
+             (format "Number of required connections (%d) exceeds maximum connection count constraint (%d)"
+                     required-connection-count max-connection-count)])
+
+      (and min-kwh (> min-kwh available-supply-kwh))
+      (conj [:not-enough-annual
+             (format "Minimum annual output constraint (%.2f kWh) exceeds available supply (%.2f kWh)"
+                     (double min-kwh) (double available-supply-kwh))])
+
+      (and max-kwh (< max-kwh required-demand-kwh))
+      (conj [:too-much-required-demand
+             (format "Maximum annual output constraint (%.2f kWh) is less than required demand (%.2f kWh)"
+                     (double max-kwh) (double required-demand-kwh))])
+
+      ;; Network length constraints
+      (and min-length (> min-length total-edge-length))
+      (conj [:not-enough-length
+             (format "Minimum network length constraint (%.2f m) exceeds total available edge length (%.2f m)"
+                     (double min-length) (double total-edge-length))])
+
+      ;; Linear density constraint
+      min-linear-density
+      (conj [:linear-density
+             "The minimum linear density constraint may not be achievable"])
+
+      (and max-linear-density (< 0 required-building-count))
+      (conj [:linear-density
+             "The maxmimum linear density may conflict with the required demands"])
+
+      (seq limited-emissions)
+      (into limited-emissions))))
+
+
 (comment
   (def problem (with-open [r (java.io.PushbackReader. (io/reader "/home/hinton/tmp/problem.edn"))]
                  (binding [*read-eval* false]
